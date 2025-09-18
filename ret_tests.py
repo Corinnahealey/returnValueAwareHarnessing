@@ -69,7 +69,7 @@ def collect_retvals(tasks):
 
    procs = []
    for index_path, _headers, name_expected in tasks:
-       print(f"{index_path} - {name_expected[0][0]}")
+       #print(f"{index_path} - {name_expected[0][0]}")
        wanted = {name: idx for name, _exp, idx in name_expected}
        p = multiprocessing.Process(target=worker,
                                     args=(index_path, wanted, retvals))
@@ -108,7 +108,7 @@ def plot_retval_stats(retvals: dict[str, dict], outdir="plots"):
     for key, values in stats.items():
         if not values:
             continue
-    print ("Key", key, "Value", values)
+ #   print ("Key", key, "Value", values)
 
        # plt.figure()
         #if isinstance(values[0], bool):

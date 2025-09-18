@@ -3,6 +3,7 @@
 import matplotlib as plt
 import numpy as np
 import multiplier as mx
+import os
 
 class VarAssignment:
     def __init__(self, depth, is_conditional, is_loop):
@@ -12,10 +13,16 @@ class VarAssignment:
 
 class Retval:
     def __init__(self, value, depth, token_str):
-        self.intValue = value
+
+    #    if isinstance(value, (int, float)) and not isinstance(value, bool):
+       # self.intValue = value
+     #   else:
+        self.intValue = None
+
         self.functionName = "default"
         self.libName = ""
         self.lineNumber = 0
+        self.fileName = ""
         self.depth = depth
         self.token_str = token_str
         self.in_loop = False
@@ -26,12 +33,14 @@ class Retval:
         self.error_func_called = False
         self.callexprs_in_block = 0
         self.is_last = False
+        self.error_handling = "Needs Manual Analysis"
 
     def to_dict(self):
         return {
-            "intValue": self.intValue,
+            "int_value": self.intValue,
             "function_name": self.functionName,
             "lib_name": self.libName,
+            "file_name" : self.fileName,
             "line_number": self.lineNumber,
             "depth": self.depth,
             "token_str": self.token_str,
@@ -42,15 +51,23 @@ class Retval:
             "is_enum": self.is_enum,
             "error_func_called": self.error_func_called,
             "callexprs_in_block": self.callexprs_in_block,
-            "is_last": self.is_last
+            "is_last": self.is_last,
+            "error_handling" : self.error_handling
         }
 
     def __str__(self):
         """User-friendly representation (values only)."""
         return ", ".join(str(v) for v in self.to_dict().values())
-    
+
     def __repr__(self):
         return self.__str__()
+
+
+    @classmethod
+    def get_formatted_keys(cls):
+        dummy = cls(0, 0, "")  # make a throwaway object
+        keys = dummy.to_dict().keys()
+        return ", ".join(k.replace("_", " ") for k in keys)
 
 class Function:
     def __init__(self, name):
@@ -64,8 +81,10 @@ class Function:
         self.is_loop = False
         self.depth = 0
 
-    def expand_ast(self, node, enums):
-        #print("        "*depth + str(type(node)))
+    def expand_ast(self, node, enums, idx, enum_values_map):
+       
+        import multiplier
+        dir(multiplier)
         
         if (isinstance(node, mx.ast.CallExpr)):
             self.callcount += 1
@@ -78,7 +97,7 @@ class Function:
 
             self.callcount = 0
 
-            self.expand_ast(node.body, enums)
+            self.expand_ast(node.body, enums, idx, enum_values_map)
 
             self.callcount = 0
             self.error_func_called = False
@@ -93,7 +112,7 @@ class Function:
             self.callcount = 0
 
             for child in node.children:
-                self.expand_ast(child, enums)
+                self.expand_ast(child, enums, idx, enum_values_map)
 
             callcount = 0
             self.error_func_called = False
@@ -102,55 +121,120 @@ class Function:
             self.depth -= 1
         elif isinstance(node, mx.ast.CompoundStmt) or isinstance(node, mx.ast.LabelStmt) or isinstance(node, mx.ast.SwitchStmt):
             for child in node.children:
-                self.expand_ast(child, enums)
+                self.expand_ast(child, enums, idx, enum_values_map)
             self.callcount = 0
             self.error_func_called = False
 
         if isinstance(node, mx.ast.ReturnStmt):
-            #print(f"        Found return stmt")
-            #print(f"        Depth {self.depth}")
-            #print(f"        Is conditional {self.is_conditional}")
-            #print(f"        Is in loop {self.is_loop}")
-            #print(f"        Callexprs in block {self.callcount}")
-            #print(f"        Errno function called {self.error_func_called}")
-            #print("")
-            
+
             if not node.return_value:
                 return
+
             token_type = node.return_value.expression_token.category
+            
+            saw_return = False
+            collected_data = []
 
-            retval = Retval(node.return_value.expression_token.data, self.depth, node.return_value.expression_token.data)
+            for t in node.tokens:
+                if saw_return:
+                    collected_data.append(t.data)
+                elif t.data == "return":
+                    saw_return = True
+            
+            joined_data = ''.join(collected_data)
 
+            # NULL is expanded to ((void*)0)
+            if joined_data ==  " ((void*)0)":
+                joined_data = "NULL"
+                 
+
+            joined_data = joined_data.replace('"', '""')
+            joined_data = f'"{joined_data}"'
+
+            retval = Retval(node.return_value.expression_token.data, self.depth, joined_data)
+            if joined_data == "NULL":
+                retval.intValue = 0 
+            
+            fileID = None
+
+            for f in idx.files:
+                result = f.containing(node)
+                if result:
+                    fileID = result.id
+                    break
+            file_path = None
+
+            for path, fid in idx.file_paths.items():
+                if fid == fileID:
+                    file_path = path
+                    break
+            retval.fileName = file_path
+            token = node.return_value.expression_token
+            loc = token.location(multiplier.frontend.FileLocationCache())
+            #print(dir(token))
+
+            if len(loc) >= 1:
+                retval.lineNumber = loc[0]
+              #  if token.category == 8:
+                   # print (retval.lineNumber)
+                if retval.lineNumber == 89:
+                    if retval.lineNumber == 89:
+
+                        line_numbers = []
+
+                        for t in node.tokens:
+                            try:
+                                loc = t.location(multiplier.frontend.FileLocationCache())
+                                if loc and len(loc) > 0:
+                                    line_numbers.append(loc[0])
+                            except Exception as e:
+                                print(f"Error getting location for token {t}: {e}")
+
+                        # Filter out 89 because for some reason, returning null results in the line number being always set to 89..?
+                        non_89_lines = [ln for ln in line_numbers if ln != 89]
+
+                        if non_89_lines:
+                            retval.lineNumber = max(non_89_lines)
+                        elif line_numbers:
+                            retval.lineNumber = max(line_numbers)  # They're all 89
+                        else:
+                            retval.lineNumber = 89  # Nothing available
+
+                
             if token_type == 9:
+               retval.intValue = node.return_value.expression_token.data
                 #TODO: assign int literal value
-                pass
+                #pass
 
             if token_type == 11 or token_type == 12 or token_type == 13:
                 #print(f"Found var {node.return_value.expression_token.data}")
-                retval.intValue = 0
+                #retval.intValue = 0
                 retval.is_var = True
 
             if token_type == 14:
                 #print("Found func")
-                retval.intValue = 0 #TODO: propagate function return value
+                #retval.intValue = 0 #TODO: propagate function return value
                 retval.is_callexpr = True
 
             if token_type == 26:
+               # print(enum_values_map)
                 #print("Found enum")
-                if node.return_value.expression_token.data not in enums:
-                    print(f"Warning: Enum {node.return_value.expression_token.data} not found in enums")
-                retval.intValue = None #TODO: get enum value
+                #if node.return_value.expression_token.data not in enums:
+                    #print(f"Warning: Enum {node.return_value.expression_token.data} not found in enums")
+                key = retval.token_str.strip().strip('"').strip("'").replace(" ", "")
+                retval.intValue = enum_values_map.get(key)
+                #print(key + " " + str(retval.intValue))
                 retval.is_conditional = self.is_conditional
                 retval.is_enum = True
 
-            retval.is_loop = self.is_loop
-            retval.is_conditional = self.is_conditional
+            retval.in_loop = self.is_loop
+            retval.in_conditional = self.is_conditional
             retval.callexprs_in_block = self.callcount
             retval.error_func_called = self.error_func_called
             self.retlist.append(retval)
 
             return
-    
+
     #Assumption: The first assignment to a var is the success value
     def get_vars(self, node):
         if isinstance(node, mx.ast.DeclStmt):
@@ -192,7 +276,10 @@ class Function:
             self.depth -= 1
 
 #Re-implemented get_enums() here because I think it would be useful to get the real integer value placed in Retval
+
 def get_enums(index, enums):
+    enum_values_map = {}
+    unresolved_aliases = []
     for decl in mx.ast.EnumDecl.IN(index):
         count = 0
 
@@ -200,57 +287,51 @@ def get_enums(index, enums):
             if enum.name in enums:
                 continue
 
-            #print(enum.name)
-
             if not enum.initializer_expression:
                 enums[enum.name] = str(count)
             else:
-                if not hasattr(enum.initializer_expression, "sub_expression"):
-                    enums[enum.name] = str(count)
-                    continue
+                try:
+                    enum_values_map[enum.name] = str(int(enum.tokens[-1].data.strip(), 0))
+                    if(enum.name == "LXB_STATUS_ERROR_OBJECT_IS_NULL"):
+                        print("FOUND")
+                except Exception as e:
+                    unresolved_aliases.append((enum.name, enum.tokens[-1].data.strip()))
+   
 
-                subexpr = enum.initializer_expression.sub_expression
-
-                if isinstance(subexpr, mx.ast.DeclRefExpr):
-                    enums[enum.name] = subexpr.r_angle_token.data
-                elif isinstance(subexpr, mx.ast.UnaryOperator):
-                    if not hasattr(subexpr.sub_expression, "sub_expression") or not hasattr(subexpr.sub_expression, "token"):
-                        enums[enum.name] = str(count)
-                        continue
-                    enums[enum.name] = subexpr.operator_token.data + subexpr.sub_expression.token.data
-                elif hasattr(subexpr, "token"):
-                    enums[enum.name] = subexpr.token.data
-                else:
-                    continue
-            
-            #print(enums[enum.name])
-            #print(count)
             count += 1
+    for name, alias in unresolved_aliases:
+        resolved_value = enum_values_map.get(alias)
+
+        if resolved_value is not None:
+            enum_values_map[name] = resolved_value
+        else:
+            print(f"Could not resolve alias: {name} -> {alias}")
+
+    return enum_values_map
 import inspect
 
 def get_public_methods_with_params(obj):
     methods = []
     for name in dir(obj):
         if name.startswith("_"):
-            continue  # Skip private or magic methods
+            continue  
         attr = getattr(obj, name)
         if callable(attr):
             try:
                 sig = inspect.signature(attr)
                 methods.append(f"{name}{sig}")
             except ValueError:
-                # In case the signature cannot be retrieved (e.g., built-ins)
                 methods.append(f"{name}(?)")
     return methods
 
 
-def ExtractLib(idx, libName):
-    
+def ExtractLib(idx, libName, headers):
+
     funcs = dict()
     enums = dict()
 
-    get_enums(idx, enums)
-  
+    enums_value_map = get_enums(idx, enums)
+
     for func in mx.ast.FunctionDecl.IN(idx):
         if (isinstance(func.return_type, mx.ast.BuiltinType) and func.return_type.builtin_kind == 426):
             continue
@@ -258,24 +339,21 @@ def ExtractLib(idx, libName):
         if not func.body:
             continue
 
-        #print(func.name)
-        
         function = Function(func.name)
         funcs[func.name] = function
 
         for child in func.body.children:
-            function.expand_ast(child, enums)
+            function.expand_ast(child, enums, idx, (enums_value_map | enums))
             function.get_vars(child)
-        
+
         if (len(function.retlist)):
             function.retlist[-1].is_last = True
-        
+
         for ret in function.retlist:
-            ret.functionName = func.name 
-            ret.libName = libName
+            ret.functionName = func.name
+            ret.libName =  os.path.basename(os.path.dirname(libName))
 
-    #print(get_public_methods(idx))
-    return funcs 
-    
+    return funcs
 
-#ExtractLib("../demos/lexbor/lib.db")
+
+
